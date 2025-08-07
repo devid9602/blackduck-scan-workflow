@@ -1,0 +1,82 @@
+name: Black Duck Scan for Multiple Repositories
+
+on:
+  workflow_dispatch: # Allows manual triggering
+  schedule:
+    - cron: '0 0 * * *' # Runs daily at midnight UTC
+
+jobs:
+  blackduck-scan:
+    runs-on: ubuntu-latest # Use self-hosted if you have a custom runner
+    steps:
+      # Checkout the repository containing repos.txt
+      - name: Checkout Workflow Repository
+        uses: actions/checkout@v4
+
+      # Create a directory to store pom.xml files
+      - name: Create POM Files Directory
+        run: mkdir -p pom_files
+
+      # Read repos.txt and process each repository
+      - name: Process Repositories
+        run: |
+          while IFS= read -r repo; do
+            # Skip empty lines
+            [[ -z "$repo" ]] && continue
+            
+            # Generate a safe directory name (replace / with _)
+            repo_dir=$(echo "$repo" | sed 's/\//_/g')
+            
+            # Checkout the repository
+            echo "Checking out $repo"
+            git clone --depth 1 "https://${{ secrets.GH_TOKEN }}@github.com/$repo.git" "$repo_dir"
+            
+            # Copy pom.xml if it exists
+            if [ -f "$repo_dir/pom.xml" ]; then
+              echo "Copying pom.xml from $repo"
+              cp "$repo_dir/pom.xml" "pom_files/${repo_dir}_pom.xml"
+            else
+              echo "No pom.xml found in $repo"
+            fi
+            
+            # Clean up the checked-out repository
+            echo "Cleaning up $repo"
+            rm -rf "$repo_dir"
+            
+          done < repos.txt
+
+      # Set up Java (required for Maven projects)
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # Run Black Duck Scan
+      - name: Run Black Duck Scan
+        uses: synopsys-sig/detect-action@v0.3.5
+        env:
+          NODE_EXTRA_CA_CERTS: ${{ secrets.LOCAL_CA_CERT_PATH }} # Optional: for custom CA certs
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          detect-version: 8.11.0
+          blackduck-url: ${{ secrets.BLACKDUCK_URL }}
+          blackduck-api-token: ${{ secrets.BLACKDUCK_API_TOKEN }}
+          scan-mode: RAPID # Use RAPID for quick scans, INTELLIGENT for full scans
+          args: |
+            --detect.source.path=pom_files
+            --detect.tools=DETECTOR
+            --detect.policy.check.fail.on.severities=BLOCKER,CRITICAL
+            --detect.detector.search.depth=15
+
+      # Optional: Upload scan results as artifact
+      - name: Upload Scan Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: blackduck-scan-results
+          path: pom_files/*_BlackDuck_RiskReport.pdf
+
+
+
+
+
